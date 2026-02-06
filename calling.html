@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>FaceTime Pro | Lifted Chat</title>
+
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+
+<style>
+:root[data-theme="light"]{
+--bg:#f2f2f7;--card:rgba(255,255,255,.75);--txt:#1c1c1e;
+--border:rgba(255,255,255,.5);--other:#e5e5ea;--input:rgba(255,255,255,.9)
+}
+:root[data-theme="dark"]{
+--bg:#000;--card:rgba(28,28,30,.8);--txt:#fff;
+--border:rgba(255,255,255,.15);--other:#3a3a3c;--input:rgba(255,255,255,.1)
+}
+:root{--green:#34c759;--red:#ff3b30;--blue:#007aff}
+
+*{box-sizing:border-box;transition:.3s cubic-bezier(.4,0,.2,1)}
+body{
+margin:0;height:100vh;display:flex;align-items:center;justify-content:center;
+font-family:-apple-system,BlinkMacSystemFont,sans-serif;
+background:var(--bg);overflow:hidden
+}
+
+.top-controls{position:absolute;top:20px;right:20px;display:flex;gap:8px;z-index:10}
+.icon-btn{
+width:44px;height:44px;border-radius:50%;border:1px solid var(--border);
+background:var(--card);backdrop-filter:blur(20px);cursor:pointer;font-size:18px;
+display:flex;align-items:center;justify-content:center;
+}
+
+.status-meter{
+position:absolute;top:20px;left:20px;padding:6px 12px;
+background:var(--card);border-radius:20px;
+font-size:11px;font-weight:700;color:var(--green);
+border:1px solid var(--border);z-index:10;
+}
+
+.card{
+width:92%;max-width:400px;height:90vh;
+background:var(--card);backdrop-filter:blur(40px) saturate(200%);
+border-radius:48px;border:1px solid var(--border);
+display:flex;flex-direction:column;position:relative;
+}
+
+.video-container{padding:12px;position:relative;flex:0 0 280px}
+#remoteVideo{width:100%;height:100%;border-radius:35px;background:#000;object-fit:cover}
+#localVideo{
+position:absolute;bottom:18px;right:18px;width:85px;height:120px;
+border-radius:18px;border:2px solid #fff;object-fit:cover;transform:scaleX(-1);
+background:#222;
+}
+
+.chat{
+flex:1;padding:15px;overflow-y:auto;
+display:flex;flex-direction:column;gap:8px;
+}
+
+.msg{max-width:85%;padding:10px 16px;border-radius:20px;font-size:14px;word-wrap:break-word}
+.msg img{max-width:100%;border-radius:12px;margin-top:5px}
+.me{align-self:flex-end;background:var(--green);color:#fff;border-bottom-right-radius:4px}
+.other{align-self:flex-start;background:var(--other);color:var(--txt);border-bottom-left-radius:4px}
+
+.inputBar{padding:15px 15px 25px;display:flex;gap:8px;align-items:center}
+#msgInput{flex:1;height:42px;border-radius:21px;padding:0 15px;border:none;background:var(--input)}
+
+.action{height:42px;padding:0 18px;border-radius:21px;border:none;font-weight:700;cursor:pointer}
+.btn-icon{padding:0 12px;background:var(--other)}
+.send{background:var(--green);color:#fff}
+.end{background:rgba(255,59,48,.15);color:var(--red)}
+</style>
+</head>
+
+<body>
+
+<div class="status-meter" id="status">Status: Initializing...</div>
+
+<div class="top-controls">
+<button class="icon-btn" onclick="toggleTheme()">🌓</button>
+</div>
+
+<div class="card">
+<div style="text-align:center;padding:18px 0 6px">
+<h1 style="margin:0;font-size:18px;color:var(--txt)">FaceTime Pro</h1>
+<button onclick="copyLink()" style="border:none;background:none;color:var(--blue);font-size:12px">Copy Invite Link</button>
+</div>
+
+<div class="video-container">
+<video id="remoteVideo" autoplay playsinline></video>
+<video id="localVideo" autoplay muted playsinline></video>
+</div>
+
+<div class="chat" id="chat"></div>
+
+<div class="inputBar">
+<input type="file" id="fileInput" hidden onchange="handleFile(this)">
+<button class="action btn-icon" onclick="fileInput.click()">📎</button>
+<input id="msgInput" placeholder="iMessage">
+<button class="action send" onclick="sendMsg()">Send</button>
+<button class="action end" onclick="endCall()">End</button>
+</div>
+</div>
+
+<script>
+// FIREBASE
+firebase.initializeApp({
+apiKey: "AIzaSyDyRni4pAbF7fDintA8wyKtan2gdzcbZgc",
+authDomain: "call-f5c7d.firebaseapp.com",
+databaseURL: "https://call-f5c7d-default-rtdb.firebaseio.com",
+projectId: "call-f5c7d"
+});
+
+const db = firebase.database();
+const userId = Math.random().toString(36).slice(2);
+const roomId = new URLSearchParams(location.search).get("room");
+let pc, localStream;
+
+const servers = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
+
+async function start(){
+localStream = await navigator.mediaDevices.getUserMedia({video:true,audio:true});
+localVideo.srcObject = localStream;
+roomId ? joinCall(roomId) : createCall();
+}
+
+function createPeer(roomRef){
+pc = new RTCPeerConnection(servers);
+localStream.getTracks().forEach(t=>pc.addTrack(t,localStream));
+
+pc.ontrack = e => remoteVideo.srcObject = e.streams[0];
+
+pc.onicecandidate = e=>{
+if(e.candidate){
+roomRef.child("candidates").child(userId).push(e.candidate.toJSON());
+}
+};
+
+roomRef.child("candidates").on("child_added", snap=>{
+if(snap.key === userId) return;
+snap.ref.on("child_added", c=>{
+pc.addIceCandidate(new RTCIceCandidate(c.val()));
+});
+});
+
+pc.onconnectionstatechange = ()=>{
+status.innerText = "Status: " + pc.connectionState;
+};
+}
+
+async function createCall(){
+const id = "room-"+Math.random().toString(36).slice(2,8);
+location.search = "?room="+id;
+const ref = db.ref("rooms/"+id);
+
+createPeer(ref);
+initChat(ref);
+
+const offer = await pc.createOffer();
+await pc.setLocalDescription(offer);
+await ref.set({offer});
+
+ref.child("answer").on("value", s=>{
+if(s.val() && !pc.currentRemoteDescription){
+pc.setRemoteDescription(new RTCSessionDescription(s.val()));
+}
+});
+}
+
+async function joinCall(id){
+const ref = db.ref("rooms/"+id);
+const data = (await ref.get()).val();
+createPeer(ref);
+initChat(ref);
+await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+const ans = await pc.createAnswer();
+await pc.setLocalDescription(ans);
+await ref.update({answer:ans});
+}
+
+function initChat(ref){
+ref.child("chat").on("child_added", s=>{
+const m=s.val(), d=document.createElement("div");
+d.className="msg "+(m.user===userId?"me":"other");
+if(m.fileData){
+if(m.fileType.startsWith("image")){
+const i=document.createElement("img");i.src=m.fileData;d.appendChild(i);
+}else{
+const a=document.createElement("a");a.href=m.fileData;a.textContent=m.text;d.appendChild(a);
+}
+}else d.textContent=m.text;
+chat.appendChild(d);chat.scrollTop=chat.scrollHeight;
+});
+}
+
+function sendMsg(){
+if(!msgInput.value)return;
+db.ref("rooms/"+roomId+"/chat").push({text:msgInput.value,user:userId});
+msgInput.value="";
+}
+
+function handleFile(i){
+const f=i.files[0];if(!f)return;
+const r=new FileReader();
+r.onload=e=>{
+db.ref("rooms/"+roomId+"/chat").push({
+user:userId,text:f.name,fileData:e.target.result,fileType:f.type
+});
+};
+r.readAsDataURL(f);
+}
+
+function copyLink(){
+navigator.clipboard.writeText(location.href);
+alert("Invite link copied!");
+}
+
+function toggleTheme(){
+document.documentElement.dataset.theme =
+document.documentElement.dataset.theme==="light"?"dark":"light";
+}
+
+function endCall(){
+pc?.close();
+localStream.getTracks().forEach(t=>t.stop());
+location.href=location.pathname;
+}
+
+msgInput.onkeydown=e=>e.key==="Enter"&&sendMsg();
+start();
+</script>
+
+</body>
+</html>
